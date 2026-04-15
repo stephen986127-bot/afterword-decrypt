@@ -25,8 +25,6 @@
   .letter-body { font-size: 16px; line-height: 1.7; color: #3C3C43; white-space: pre-wrap; }
   .divider { border: none; border-top: 1px solid #E5E5EA; margin: 24px 0; }
   .footer { text-align: center; color: #8E8E93; font-size: 12px; margin-top: 32px; }
-  #decrypt-section { display: block; }
-  #letter-section { display: none; }
 </style>
 </head>
 <body>
@@ -43,7 +41,7 @@
     <div class="error" id="error-msg" style="display:none"></div>
     <button id="decrypt-btn" onclick="decryptLetter()">Read Letter</button>
   </div>
-  <div id="letter-section">
+  <div id="letter-section" style="display:none">
     <h1>📬 Your Letter</h1>
     <hr class="divider">
     <div class="letter">
@@ -65,7 +63,7 @@ async function loadLetter() {
   const id = params.get('id')
   if (!id) { showError('No letter ID found in URL.'); return }
 
-  const res = await fetch(SUPABASE_URL + '/rest/v1/letters?id=eq.' + id + '&select=key_hint,body_encrypted,iv,salt', {
+  const res = await fetch(SUPABASE_URL + '/rest/v1/letters?id=eq.' + id + '&select=key_hint,body_encrypted,iv,salt,status', {
     headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
   })
   const data = await res.json()
@@ -78,11 +76,17 @@ async function loadLetter() {
   }
 }
 
-async function pbkdf2(passphrase, salt, keylen) {
+async function deriveKey(passphrase, salt, keylen) {
   const enc = new TextEncoder()
   const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveBits'])
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromB64(salt), iterations: 100000, hash: 'SHA-256' }, keyMaterial, keylen * 8)
-  return Array.from(new Uint8Array(bits))
+  // salt is a string — encode as UTF-8 bytes (same as QuickCrypto)
+  const saltBytes = new TextEncoder().encode(salt)
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial,
+    keylen * 8
+  )
+  return new Uint8Array(bits)
 }
 
 function fromB64(b64) {
@@ -110,17 +114,6 @@ function utf8Decode(bytes) {
   return str
 }
 
-async function aesDecrypt(ciphertext, key, iv) {
-  // Simple AES-CBC using aes-js logic inline
-  // We'll use Web Crypto for this
-  const keyBytes = new Uint8Array(key)
-  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt'])
-  const ivBytes = new Uint8Array(iv)
-  const ct = fromB64(ciphertext)
-  const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBytes }, cryptoKey, ct)
-  return pkcs7Unpad(Array.from(new Uint8Array(decrypted)))
-}
-
 async function decryptLetter() {
   const passphrase = document.getElementById('key-input').value.trim()
   if (!passphrase) { showError('Please enter your encryption key.'); return }
@@ -132,10 +125,15 @@ async function decryptLetter() {
   document.getElementById('error-msg').style.display = 'none'
 
   try {
-    const key = await pbkdf2(passphrase, letterData.salt + ':key', 32)
-    const iv  = await pbkdf2(passphrase, letterData.salt + ':iv', 16)
-    const plainBytes = await aesDecrypt(letterData.body_encrypted, key, iv)
-    const plaintext = utf8Decode(plainBytes)
+    const salt = letterData.salt
+    const keyBytes = await deriveKey(passphrase, salt + ':key', 32)
+    const ivBytes  = await deriveKey(passphrase, salt + ':iv', 16)
+
+    const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt'])
+    const ct = fromB64(letterData.body_encrypted)
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBytes }, cryptoKey, ct)
+    const plain = pkcs7Unpad(Array.from(new Uint8Array(decrypted)))
+    const plaintext = utf8Decode(plain)
     const parsed = JSON.parse(plaintext)
 
     document.getElementById('letter-title').textContent = parsed.title || ''
