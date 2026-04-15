@@ -132,8 +132,7 @@ async function decryptLetter() {
     const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt'])
     const ct = fromB64(letterData.body_encrypted)
     const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBytes }, cryptoKey, ct)
-    const plain = pkcs7Unpad(Array.from(new Uint8Array(decrypted)))
-    const plaintext = utf8Decode(plain)
+    const plaintext = new TextDecoder().decode(decrypted)
     const parsed = JSON.parse(plaintext)
 
     document.getElementById('letter-title').textContent = parsed.title || ''
