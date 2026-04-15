@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Afterword — Read Your Letter</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #F8F8FA; color: #1C1C1E; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .card { background: white; border-radius: 20px; padding: 40px; max-width: 480px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+  h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+  .sub { color: #8E8E93; font-size: 14px; margin-bottom: 32px; }
+  .hint-box { background: #FFF9EC; border-radius: 12px; padding: 16px; margin-bottom: 24px; }
+  .hint-label { font-size: 11px; font-weight: 700; color: #B8860B; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 4px; }
+  .hint-text { color: #856404; font-size: 15px; }
+  label { display: block; font-size: 11px; font-weight: 700; color: #8E8E93; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 8px; }
+  input { width: 100%; border: 1.5px solid #E5E5EA; border-radius: 12px; padding: 14px 16px; font-size: 16px; outline: none; transition: border-color 0.2s; margin-bottom: 16px; }
+  input:focus { border-color: #007AFF; }
+  button { width: 100%; background: #007AFF; color: white; border: none; border-radius: 14px; padding: 16px; font-size: 16px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .error { color: #FF3B30; font-size: 14px; margin-bottom: 16px; }
+  .letter { margin-top: 32px; }
+  .letter-title { font-size: 22px; font-weight: 700; margin-bottom: 16px; }
+  .letter-body { font-size: 16px; line-height: 1.7; color: #3C3C43; white-space: pre-wrap; }
+  .divider { border: none; border-top: 1px solid #E5E5EA; margin: 24px 0; }
+  .footer { text-align: center; color: #8E8E93; font-size: 12px; margin-top: 32px; }
+  #decrypt-section { display: block; }
+  #letter-section { display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="decrypt-section">
+    <h1>🔒 You have a letter</h1>
+    <p class="sub">Someone left you an encrypted letter through Afterword.</p>
+    <div class="hint-box" id="hint-box" style="display:none">
+      <div class="hint-label">Key Hint</div>
+      <div class="hint-text" id="hint-text"></div>
+    </div>
+    <label>YOUR ENCRYPTION KEY</label>
+    <input type="text" id="key-input" placeholder="Enter the key from the sender" />
+    <div class="error" id="error-msg" style="display:none"></div>
+    <button id="decrypt-btn" onclick="decryptLetter()">Read Letter</button>
+  </div>
+  <div id="letter-section">
+    <h1>📬 Your Letter</h1>
+    <hr class="divider">
+    <div class="letter">
+      <div class="letter-title" id="letter-title"></div>
+      <div class="letter-body" id="letter-body"></div>
+    </div>
+  </div>
+  <div class="footer">Afterword — Your letters, delivered when it matters</div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://wmcgsmyeifureurdjhta.supabase.co'
+const SUPABASE_KEY = 'sb_publishable_ADEBU-kFT_Pg9Gs6y7Ge5g_UJGJBG3L'
+
+let letterData = null
+
+async function loadLetter() {
+  const params = new URLSearchParams(window.location.search)
+  const id = params.get('id')
+  if (!id) { showError('No letter ID found in URL.'); return }
+
+  const res = await fetch(SUPABASE_URL + '/rest/v1/letters?id=eq.' + id + '&select=key_hint,body_encrypted,iv,salt', {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  })
+  const data = await res.json()
+  if (!data || data.length === 0) { showError('Letter not found.'); return }
+
+  letterData = data[0]
+  if (letterData.key_hint) {
+    document.getElementById('hint-box').style.display = 'block'
+    document.getElementById('hint-text').textContent = letterData.key_hint
+  }
+}
+
+async function pbkdf2(passphrase, salt, keylen) {
+  const enc = new TextEncoder()
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveBits'])
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromB64(salt), iterations: 100000, hash: 'SHA-256' }, keyMaterial, keylen * 8)
+  return Array.from(new Uint8Array(bits))
+}
+
+function fromB64(b64) {
+  const s = atob(b64)
+  const out = new Uint8Array(s.length)
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i)
+  return out
+}
+
+function pkcs7Unpad(bytes) {
+  const pad = bytes[bytes.length - 1]
+  return bytes.slice(0, bytes.length - pad)
+}
+
+function utf8Decode(bytes) {
+  let str = '', i = 0
+  while (i < bytes.length) {
+    const b = bytes[i]
+    if (b < 0x80) { str += String.fromCodePoint(b); i++ }
+    else if ((b & 0xE0) === 0xC0) { str += String.fromCodePoint(((b & 0x1F) << 6) | (bytes[i+1] & 0x3F)); i += 2 }
+    else if ((b & 0xF0) === 0xE0) { str += String.fromCodePoint(((b & 0x0F) << 12) | ((bytes[i+1] & 0x3F) << 6) | (bytes[i+2] & 0x3F)); i += 3 }
+    else if ((b & 0xF8) === 0xF0) { str += String.fromCodePoint(((b & 0x07) << 18) | ((bytes[i+1] & 0x3F) << 12) | ((bytes[i+2] & 0x3F) << 6) | (bytes[i+3] & 0x3F)); i += 4 }
+    else i++
+  }
+  return str
+}
+
+async function aesDecrypt(ciphertext, key, iv) {
+  // Simple AES-CBC using aes-js logic inline
+  // We'll use Web Crypto for this
+  const keyBytes = new Uint8Array(key)
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt'])
+  const ivBytes = new Uint8Array(iv)
+  const ct = fromB64(ciphertext)
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBytes }, cryptoKey, ct)
+  return pkcs7Unpad(Array.from(new Uint8Array(decrypted)))
+}
+
+async function decryptLetter() {
+  const passphrase = document.getElementById('key-input').value.trim()
+  if (!passphrase) { showError('Please enter your encryption key.'); return }
+  if (!letterData) { showError('Letter data not loaded.'); return }
+
+  const btn = document.getElementById('decrypt-btn')
+  btn.disabled = true
+  btn.textContent = 'Decrypting...'
+  document.getElementById('error-msg').style.display = 'none'
+
+  try {
+    const key = await pbkdf2(passphrase, letterData.salt + ':key', 32)
+    const iv  = await pbkdf2(passphrase, letterData.salt + ':iv', 16)
+    const plainBytes = await aesDecrypt(letterData.body_encrypted, key, iv)
+    const plaintext = utf8Decode(plainBytes)
+    const parsed = JSON.parse(plaintext)
+
+    document.getElementById('letter-title').textContent = parsed.title || ''
+    document.getElementById('letter-body').textContent = parsed.body || ''
+    document.getElementById('decrypt-section').style.display = 'none'
+    document.getElementById('letter-section').style.display = 'block'
+  } catch (e) {
+    showError('Wrong key — please try again.')
+    btn.disabled = false
+    btn.textContent = 'Read Letter'
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-msg')
+  el.textContent = msg
+  el.style.display = 'block'
+}
+
+loadLetter()
+</script>
+</body>
+</html>
